@@ -1,0 +1,264 @@
+# Tech Indicator Input
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from tensorflow import keras
+
+class TechIndicators:
+  
+  def __init__(self, data):
+    if type(data)==pd.DataFrame:
+      data = data.to_numpy()
+    self.data = data
+
+  def make_RSI(self, days=14):
+    ohlcv = self.data
+    c = ohlcv[:, 3]
+    rsi_list = [0 for _ in range(days)]
+    n = days+1
+    for i in range(n, len(c)+1):
+      this = c[i-n:i]
+      up_list = []
+      down_list = []
+      for j in range(1, n):
+        x = this[j]-this[j-1]
+        if x>=0:
+          up_list.append(x)
+        else:
+          down_list.append(abs(x))
+      au = sum(up_list)/days
+      ad = sum(down_list)/days
+      rsi = au/(au+ad)*100
+      rsi_list.append(rsi)
+    rsi_list = np.array(rsi_list).reshape(-1,1)
+    return rsi_list
+
+  def make_ATR(self, days=14):
+    ohlcv = self.data
+    atr_list = [0 for _ in range(days)]
+    n = days+1
+    for i in range(n, len(ohlcv)+1):
+      this = ohlcv[i-n:i, :]
+      tr_list = []
+      for j in range(1, n):
+        tr = max((this[j,1]-this[j,2]), abs(this[j,1]-this[j-1,3]), abs(this[j,2]-this[j-1,3]))
+        tr_list.append(tr)
+      atr_list.append(sum(tr_list)/days)
+    atr_list = np.array(atr_list).reshape(-1,1)
+    return atr_list
+
+  def make_EMA(self, days=14):
+    close = self.data[:,3]
+    EMA_list = [0 for _ in range(days-1)]
+    k=2/(days+1)
+    for i in range(days, len(close)+1):
+      if i==days:
+        EMA_list.append(np.mean(close[:days]))
+      else:
+        EMA = close[i-1]*k+EMA_list[i-2]*(1-k)
+        EMA_list.append(EMA)
+    EMA_list = np.array(EMA_list).reshape(-1,1)
+    return EMA_list
+
+  def make_MACD(self, day1=12, day2=26, signal_day=9, combine_MACD_signal=True):
+    '''
+    making MACD
+    '''
+    EMA_1 = self.make_EMA(day1).reshape(-1)
+    EMA_2 = self.make_EMA(day2).reshape(-1)
+    MACD_list = [0 for _ in range(day2-1)]
+    for one, two in zip(EMA_1[day2-1:], EMA_2[day2-1:]):
+      MACD_list.append(one-two)
+
+    '''
+    making MACD signal
+    '''
+    MACD_signal_list = [0 for _ in range(signal_day-1)]
+    for i in range(signal_day, len(MACD_list)+1):
+      if i==signal_day:
+        MACD_signal_list.append(np.mean(MACD_list[:signal_day]))
+      else:
+        k=2/(signal_day+1)
+        MACD_signal = MACD_list[i-1]*k+MACD_signal_list[i-2]*(1-k)
+        MACD_signal_list.append(MACD_signal)
+    
+    MACD_list = np.array(MACD_list).reshape(-1,1)
+    MACD_signal_list = np.array(MACD_signal_list).reshape(-1,1)
+
+    '''
+    set True if you want to combine MACD and signal
+    '''
+    if combine_MACD_signal==True:
+      return np.hstack((MACD_list, MACD_signal_list))
+    else:
+      return MACD_list, MACD_signal_list
+
+
+def from_where(data):
+  if type(data)==np.ndarray:
+    for i in range(len(data)):
+      x = data[i,:]
+      if 0 in x:
+        continue
+      else:
+        return i
+        break
+  else:
+    print('your data type should be np.array !')
+
+# 데이터 만들기
+
+test = pd.read_csv('/content/drive/MyDrive/DATA FILE/input(NS)_data.csv').to_numpy()
+test = test[:, 0:5]
+close = test[:, 3].reshape(-1)
+
+predict_day = 5
+want_rate = 5
+
+def to_updown_rate(data, day=1):
+  target = [0 for _ in range(day)]
+  for i in range(day, len(data)):
+    target.append((data[i]-data[i-day])/data[i-day]*100)
+  target = np.array(target).reshape(-1,1)
+  return target
+
+target = to_updown_rate(close, predict_day)
+target_rate = target
+print(len(target))
+
+tech = TechIndicators(test)
+
+rsi = tech.make_RSI()
+atr = tech.make_ATR()
+ema5 = tech.make_EMA(days=5)
+ema20 = tech.make_EMA(days=20)
+macd = tech.make_MACD()
+
+tech_input_data = np.hstack((ema5, ema20, rsi, atr, macd))
+
+start = from_where(tech_input_data)
+data = tech_input_data[start:, :]
+target = target[start:]>=want_rate
+target_rate = target_rate[start:]
+
+# 모델 만들기 ===================================================================================================================================================================================================================================
+
+# hyper params 설정
+window = 90
+
+
+# 데이터 만들기 및 전처리
+from sklearn.preprocessing import MaxAbsScaler
+sc = MaxAbsScaler()
+data = sc.fit_transform(data)
+
+input_data = []
+for i in range(window, len(data)+1):
+  input_data.append(data[i-window:i, :])
+
+input_data = np.array(input_data)[:-predict_day, :]
+target_data = target.reshape(-1)[window+predict_day-1:]
+target_rate = target_rate.reshape(-1)[window+predict_day-1:]
+print(len(input_data), len(target_data))
+
+from sklearn.model_selection import train_test_split
+train_input, val_input, train_target, val_target, train_rate, val_rate = train_test_split(input_data, target_data, target_rate, test_size=0.1)
+train_input, test_input, train_target, test_target, train_rate, test_rate = train_test_split(train_input, train_target, train_rate, test_size=0.1)
+
+print('target에서 0하고 1 개수 알려줄게 ~')
+no = np.sum(train_target==0)
+yes = np.sum(train_target==1)
+print(no, yes)
+print(no/(no+yes))
+print('여기는 val이야 ~')
+no = np.sum(val_target==0)
+yes = np.sum(val_target==1)
+print(no, yes)
+print(no/(no+yes))
+
+# 모델 구축
+initializer = keras.initializers.he_normal()
+features = len(pd.DataFrame(data).columns)
+
+initializers = [keras.initializers.glorot_uniform()]#[keras.initializers.he_normal(), keras.initializers.he_uniform(), keras.initializers.glorot_normal(), keras.initializers.glorot_uniform()]
+batch_sizes = [32, 64, 128]
+optimizers = ['adam']
+units = [20, 40, 80, 160]
+
+
+for initializer in initializers:
+  for b in batch_sizes:
+    for o in optimizers:
+      for u in units:
+        print(str(initializer)+' 배치 수 : '+str(b)+' '+o+' 유닛 수 : '+str(u)+'===============================================================================================================')
+        model = keras.Sequential()
+        model.add(keras.layers.LSTM(u, kernel_initializer=initializer, input_shape=(window,features)))
+        model.add(keras.layers.LayerNormalization())
+        model.add(keras.layers.Dense(1, activation='sigmoid'))
+        model.compile(optimizer = o, loss='binary_crossentropy', metrics='accuracy')
+
+        # 정보 시각화
+        history = model.fit(train_input, train_target, batch_size=b, epochs=200, validation_data=(val_input, val_target))
+
+        plt.plot(history.history['loss'])
+        plt.plot(history.history['val_loss'])
+        plt.legend(['train', 'val'])
+        plt.show()
+        plt.plot(history.history['accuracy'])
+        plt.plot(history.history['val_accuracy'])
+        plt.legend(['train', 'val'])
+        plt.show()
+
+        true_zero = 0
+        true_one = 0
+        false_zero = 0
+        false_one = 0
+        for i in range(len(test_input)):
+          x = test_input[i].reshape(-1,window,features)
+          y = np.round(model.predict(x, verbose=0))
+          if test_target[i]==0 and y==0:
+            true_zero += 1
+          elif test_target[i]==1 and y==1:
+            true_one += 1
+          elif test_target[i]==0 and y==1:
+            false_one += 1
+          elif test_target[i]==1 and y==0:
+            false_zero += 1
+
+        print('==============================================================결과==============================================================')
+        print('전체 0 수 : '+str(np.sum(test_target==0)))
+        print('전체 1 수 : '+str(np.sum(test_target==1)))
+        print('진짜 0 맞춘 수 : '+str(true_zero))
+        print('진짜 1 맞춘 수 : '+str(true_one))
+        print('0인데 1로 맞춘 수 : '+str(false_one))
+        print('1인데 0으로 맞춘 수 : '+str(false_zero))
+
+        coin = 100
+        coins = [100]
+        index = 0
+        for i in range(len(test_input)):
+          if i<index:
+            continue
+          else:
+            x = test_input[i].reshape(-1,window,features)
+            y = np.round(model.predict(x, verbose=0))
+            if y==1:
+              coin *= (100+test_rate[i])/100
+              index += 6
+            coins.append(coin)
+
+        plt.plot(coins)
+        plt.show()
+
+
+        score = 0
+        for i in range(len(test_target)):
+          x = test_input[i].reshape(-1,window,features)
+          y = np.round(model.predict(x, verbose=0))
+          if y==test_target[i]:
+            score += 1
+        yes = np.sum(test_target==1)
+        no = np.sum(test_target==0)
+        print(no/(yes+no))
+        print('최종 성능 : '+str(score/len(test_target)))
