@@ -1,0 +1,104 @@
+ticker_num =  5
+
+# main hyper parmas
+predict_day = 5
+want_rate = 5
+window = 90
+
+from keras.api._v2.keras import datasets
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from tensorflow import keras
+
+input = pd.read_csv('/content/drive/MyDrive/FIAI 오류 잡기/tech_for_scaler.csv').to_numpy()[:, 6*ticker_num:6*(ticker_num+1)]  # tech
+target = pd.read_csv('/content/drive/MyDrive/FIAI 오류 잡기/target_rate_for_train.csv').to_numpy()[window-1:, ticker_num]  # target_rate
+
+# a1 = input[:, :3]
+# a2 = input[:, 4:]
+# input = np.hstack((a1, a2))
+# input = input[:, 2].reshape(-1,1)
+
+print(input.shape)
+
+from sklearn.preprocessing import MaxAbsScaler
+sc = MaxAbsScaler()
+input = sc.fit_transform(input)
+target = target>=want_rate
+
+train_num = int(0.8*len(target))
+val_num = int(0.1*len(target))
+test_num = len(target)-(train_num+val_num)
+
+
+
+train_dataset = keras.utils.timeseries_dataset_from_array(input, target, 
+                                                          sequence_length=window, 
+                                                          batch_size=64,
+                                                          shuffle=True, 
+                                                          start_index = 0, 
+                                                          end_index = train_num)
+
+val_dataset = keras.utils.timeseries_dataset_from_array(input, target, 
+                                                          sequence_length=window, 
+                                                          batch_size=64,
+                                                          shuffle=True, 
+                                                          start_index = train_num,
+                                                          end_index = train_num+val_num)
+
+test_dataset = keras.utils.timeseries_dataset_from_array(input, target, 
+                                                          sequence_length=window, 
+                                                          batch_size=64,
+                                                          shuffle=True, 
+                                                          start_index = train_num+val_num)
+
+# Model Architecture
+features = len(pd.DataFrame(input).columns)
+
+initializers = [keras.initializers.he_normal(), keras.initializers.he_uniform(), keras.initializers.glorot_normal(), keras.initializers.glorot_uniform()]
+batch_sizes = [128, 256, 512]
+optimizers = ['adam']
+units = [320,640]#[80, 120, 160]
+
+result_table = []
+model_num = 0
+patience_num = 60
+
+for o in optimizers:
+  for initializer in initializers:
+    for b in batch_sizes:
+      for u in units:
+        print('Model Hyper Parameter')
+        print('Initializer : '+str(initializer))
+        print('Batch Size : '+str(b))
+        print('Unit Number : '+str(u))
+        print('Optimizer : '+str(o))
+        print('========================================')
+
+        # Build Model
+        model = keras.Sequential()
+        model.add(keras.layers.LSTM(u, kernel_initializer=initializer, input_shape=(window,features)))
+        model.add(keras.layers.LayerNormalization())
+        # model.add(keras.layers.LSTM(40, kernel_initializer=initializer))
+        # model.add(keras.layers.LayerNormalization())
+        model.add(keras.layers.Dense(1, activation='sigmoid'))
+        model.compile(optimizer = o, loss='binary_crossentropy', metrics='accuracy')
+
+        checkpoint_cb = keras.callbacks.ModelCheckpoint('model'+str(ticker_num)+'_'+str(model_num)+'.h5', monitor='val_accuracy', save_best_only=True)
+        early_stopping_cb = keras.callbacks.EarlyStopping(patience=patience_num, monitor='val_accuracy', restore_best_weights=True)
+
+        # Index Visualization
+        history = model.fit(train_dataset, 
+                            batch_size=b, 
+                            epochs=400,
+                            validation_data=val_dataset, 
+                            callbacks=[checkpoint_cb, early_stopping_cb])
+        
+        plt.plot(history.history['loss'])
+        plt.plot(history.history['val_loss'])
+        plt.legend(['train', 'val'])
+        plt.show()
+        plt.plot(history.history['accuracy'])
+        plt.plot(history.history['val_accuracy'])
+        plt.legend(['train', 'val'])
+        plt.show()
